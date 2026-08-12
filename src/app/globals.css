@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-bg text-ink antialiased;
+  }
+
+  /* Acessibilidade: foco visível em todos os controles */
+  :focus-visible {
+    outline: 2px solid theme("colors.ink");
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@media print {
+  @page {
+    margin: 16mm;
+  }
+  body {
+    background: #fff;
+  }
+}
+
+@layer utilities {
+  /* Todo número de dinheiro/quantidade usa .num (SPEC §5) */
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .num-strong {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+  }
+  /* select/date compactos em barras de filtro (ver /app/vendas) */
+  .fld {
+    height: 2.75rem;
+    border-radius: 12px;
+    border: 1px solid theme("colors.line");
+    background: theme("colors.card");
+    padding: 0 0.75rem;
+    font-size: 0.9375rem;
+    color: theme("colors.ink");
+  }
+}

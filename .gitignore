@@ -1,0 +1,50 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.log
+npm-debug.log*
+
+# env — NUNCA versionar chaves. Só o template .env.example entra no repo.
+.env
+.env.*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# vercel
+.vercel
+
+# supabase (artefatos locais da CLI; migrations SQL SÃO versionadas)
+/supabase/.temp/
+/supabase/.branches/
+/supabase/.env
+
+# credenciais avulsas que às vezes caem na raiz
+*.key
+*.p12
+*.pfx
+service-account*.json
+credentials*.json
+
+# data layer mock (JSON local com os dados de demonstração)
+/.data/
+
+# fotos enviadas em dev (storage mock; no Supabase isso vai pro bucket privado)
+/public/uploads/
+
+# artefatos de teste/exploração
+/shots/
+/shots2/
+*.tmp.mjs
