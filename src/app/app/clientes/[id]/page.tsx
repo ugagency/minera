@@ -21,10 +21,10 @@ export default async function ClienteDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const statement = clientStatement(id);
+  const statement = await clientStatement(id);
   if (!statement) notFound();
   const { client, rows, balance } = statement;
-  const points = readDb().points;
+  const points = (await readDb()).points;
 
   return (
     <div className="flex flex-col gap-6">

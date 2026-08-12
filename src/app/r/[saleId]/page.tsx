@@ -19,10 +19,10 @@ export default async function ReceiptPage({
   params: Promise<{ saleId: string }>;
 }) {
   const { saleId } = await params;
-  const details = getSaleDetails(saleId);
+  const details = await getSaleDetails(saleId);
   if (!details) notFound();
 
-  const { sale, point, product, client, payments } = details;
+  const { sale, point, product, client, payments, photoSignedUrl } = details;
   const createdAt = new Date(sale.created_at);
   const hasPix = payments.some((p) => p.method === "pix");
 
@@ -65,11 +65,11 @@ export default async function ReceiptPage({
         </Card>
       )}
 
-      {sale.photo_url && (
+      {photoSignedUrl && (
         <Card className="flex flex-col gap-2" padding="none">
           <div className="overflow-hidden rounded-card">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={sale.photo_url} alt="Foto de retirada" className="w-full object-cover" />
+            <img src={photoSignedUrl} alt="Foto de retirada" className="w-full object-cover" />
           </div>
           <div className="flex flex-col gap-1 p-4 pt-0 text-sm text-ink-faint">
             <span>{format(createdAt, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}</span>

@@ -40,10 +40,10 @@ export function SaleDetailModal({ sale }: { sale: SaleRow }) {
             ))}
           </div>
 
-          {sale.photo_url ? (
+          {sale.photoSignedUrl ? (
             <div className="overflow-hidden rounded-card border border-line">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={sale.photo_url} alt="Foto de retirada" className="w-full object-cover" />
+              <img src={sale.photoSignedUrl} alt="Foto de retirada" className="w-full object-cover" />
             </div>
           ) : (
             <p className="text-sm text-ink-faint">Sem foto registrada.</p>

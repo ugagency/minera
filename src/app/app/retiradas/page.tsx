@@ -10,9 +10,9 @@ import { formatBRL } from "@/lib/format";
 export const dynamic = "force-dynamic";
 
 export default async function RetiradasPage() {
-  const db = readDb();
+  const db = await readDb();
   const partners = db.partners.filter((p) => p.kind === "partner");
-  const withdrawals = listWithdrawalsAdmin();
+  const withdrawals = await listWithdrawalsAdmin();
 
   return (
     <div className="flex flex-col gap-6">

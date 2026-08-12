@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
-// F0: raiz aponta para a amostra visual. Na F1 passa a redirecionar por role.
+// O middleware já redireciona "/" por auth+role (login ou home do papel).
+// Este fallback só é alcançado se o matcher do middleware não pegar a rota.
 export default function Home() {
-  redirect("/design");
+  redirect("/login");
 }

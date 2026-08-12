@@ -12,7 +12,7 @@ export default async function AcertoPrintPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const settlement = getSettlement(id);
+  const settlement = await getSettlement(id);
   if (!settlement) notFound();
 
   return (

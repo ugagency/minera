@@ -9,7 +9,7 @@ import type { ExpenseCategory } from "@/lib/data/types";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const data = dashboardData();
+  const data = await dashboardData();
 
   return (
     <div className="flex flex-col gap-6">

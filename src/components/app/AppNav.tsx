@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cx } from "@/lib/cx";
+import { LogoutButton } from "./LogoutButton";
 
 const ITEMS = [
   { href: "/app", label: "Dashboard" },
@@ -44,6 +45,9 @@ export function AppNav() {
       >
         Modo campo →
       </Link>
+      <div className="px-3 py-2 lg:mt-2">
+        <LogoutButton />
+      </div>
     </nav>
   );
 }

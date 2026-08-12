@@ -1,86 +1,51 @@
-import fs from "node:fs";
-import path from "node:path";
+import { createClient } from "@/lib/supabase/server";
 import type { Db } from "./types";
-import {
-  buildSeedDb,
-  SEED_VERSION,
-  COMPANY_ID,
-  OWNER_PROFILE_ID,
-  OFFICE_PROFILE_ID,
-  FIELD_PROFILE_ID,
-  POINT_AREAL_ID,
-  POINT_SAIBREIRA_ID,
-} from "./seed";
-import { computeSettlement, openPeriodStart, persistSettlement } from "./settlement";
 
-// Data layer mock (sem Supabase até o fim do projeto): JSON em disco com a
-// mesma forma do schema real (SPEC §6). Para resetar os dados de demo,
-// apague .data/db.json.
+// Data layer real (Supabase/Postgres). readDb() busca as tabelas relevantes
+// com o client autenticado da requisição — RLS já escopa tudo por empresa
+// automaticamente. Mantém a MESMA forma (Db) que a versão mock usava, então
+// toda a lógica pura em queries.ts / admin-queries.ts / settlement.ts
+// continua igual, só ganhou `await` nas chamadas.
+//
+// Volume da demo (~1-2 mil linhas nas maiores tabelas) é pequeno o bastante
+// para trazer tudo de uma vez com poucas queries em paralelo; não pagina.
 
-const DB_PATH = path.join(process.cwd(), ".data", "db.json");
+const TABLES = [
+  "companies",
+  "profiles",
+  "points",
+  "partners",
+  "machines",
+  "clients",
+  "vehicles",
+  "products",
+  "sales",
+  "sale_payments",
+  "receipts",
+  "expenses",
+  "withdrawals",
+  "production_logs",
+  "settlements",
+  "settlement_lines",
+  "point_counters",
+] as const;
 
-type VersionedDb = Db & { _seed_version?: number };
+export async function readDb(): Promise<Db> {
+  const supabase = await createClient();
 
-function createSeededDb(): VersionedDb {
-  const db = buildSeedDb() as VersionedDb;
+  const results = await Promise.all(
+    TABLES.map((table) => supabase.from(table).select("*"))
+  );
 
-  // 1 acerto já fechado por ponto (SPEC §10): cobre os primeiros ~30 dias,
-  // deixando o período atual aberto com números vivos.
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 30);
-  cutoff.setHours(23, 59, 59, 999);
-  const periodEnd = cutoff.toISOString();
+  const db = {} as Db;
+  TABLES.forEach((table, i) => {
+    const { data, error } = results[i]!;
+    if (error) {
+      throw new Error(`Falha ao ler '${table}' do Supabase: ${error.message}`);
+    }
+    // @ts-expect-error — montagem dinâmica da mesma forma de Db
+    db[table] = data ?? [];
+  });
 
-  for (const pointId of [POINT_AREAL_ID, POINT_SAIBREIRA_ID]) {
-    const start = openPeriodStart(db, pointId);
-    const calc = computeSettlement(db, pointId, start, periodEnd);
-    persistSettlement(db, calc, OWNER_PROFILE_ID);
-    // closed_at coerente com o fim do período (não "agora")
-    const settlement = db.settlements[db.settlements.length - 1];
-    if (settlement) settlement.closed_at = periodEnd;
-  }
-
-  db._seed_version = SEED_VERSION;
   return db;
 }
-
-function ensureDbFile(): void {
-  if (fs.existsSync(DB_PATH)) {
-    try {
-      const existing = JSON.parse(fs.readFileSync(DB_PATH, "utf-8")) as VersionedDb;
-      if ((existing._seed_version ?? 0) >= SEED_VERSION) return;
-    } catch {
-      // arquivo corrompido → regenera
-    }
-  }
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  fs.writeFileSync(DB_PATH, JSON.stringify(createSeededDb(), null, 2), "utf-8");
-}
-
-export function readDb(): Db {
-  ensureDbFile();
-  const raw = fs.readFileSync(DB_PATH, "utf-8");
-  return JSON.parse(raw) as Db;
-}
-
-export function writeDb(db: Db): void {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
-}
-
-/** Lê, aplica a mutação e grava — uso padrão nas Server Actions. */
-export function mutateDb<T>(fn: (db: Db) => T): T {
-  const db = readDb();
-  const result = fn(db);
-  writeDb(db);
-  return result;
-}
-
-export const SEED_IDS = {
-  COMPANY_ID,
-  OWNER_PROFILE_ID,
-  OFFICE_PROFILE_ID,
-  FIELD_PROFILE_ID,
-  POINT_AREAL_ID,
-  POINT_SAIBREIRA_ID,
-};

@@ -230,46 +230,6 @@ function pendingCreditInPeriod(
   return pending;
 }
 
-/** Grava o settlement + lines a partir de um cálculo (§7.2 passo 8). Fechado = imutável. */
-export function persistSettlement(
-  db: Db,
-  calc: SettlementCalc,
-  closedBy: string
-): string {
-  const settlementId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.settlements.push({
-    id: settlementId,
-    created_at: now,
-    company_id: db.companies[0]?.id ?? "",
-    point_id: calc.point_id,
-    period_start: calc.period_start,
-    period_end: calc.period_end,
-    closed_at: now,
-    closed_by: closedBy,
-    cash_in: calc.cash_in,
-    gross_sales: calc.gross_sales,
-    expenses_total: calc.expenses_total,
-    landowner_payout: calc.landowner_payout,
-    profit_pool: calc.profit_pool,
-    snapshot: calc,
-  });
-  for (const line of calc.lines) {
-    db.settlement_lines.push({
-      id: crypto.randomUUID(),
-      created_at: now,
-      settlement_id: settlementId,
-      partner_id: line.partner_id,
-      partner_name: line.partner_name,
-      kind: line.kind,
-      base_amount: line.base_amount,
-      withdrawals_total: line.withdrawals_total,
-      final_amount: line.final_amount,
-    });
-  }
-  return settlementId;
-}
-
 /** §7.3: um lançamento não pode ser cancelado se um settlement fechado cobre sua data. */
 export function isCoveredBySettlement(
   db: Db,

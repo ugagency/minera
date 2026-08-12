@@ -4,7 +4,7 @@ import { readDb } from "@/lib/data/db";
 export const dynamic = "force-dynamic";
 
 export default async function CadastrosPage() {
-  const db = readDb();
+  const db = await readDb();
 
   return (
     <div className="flex flex-col gap-6">

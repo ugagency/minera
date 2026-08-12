@@ -1,6 +1,7 @@
 import { readDb } from "./db";
 import { clientBalance } from "./queries";
 import { computeSettlement, openPeriodStart, isCoveredBySettlement } from "./settlement";
+import { createClient } from "@/lib/supabase/server";
 import type {
   Client,
   Db,
@@ -54,8 +55,8 @@ export function overdueBalance(db: Db, clientId: string): number {
 
 export type ClientRow = Client & { balance: number; overdue: number };
 
-export function listClientsAdmin(): ClientRow[] {
-  const db = readDb();
+export async function listClientsAdmin(): Promise<ClientRow[]> {
+  const db = await readDb();
   return db.clients
     .map((c) => ({
       ...c,
@@ -79,12 +80,12 @@ export type StatementRow = {
   balance: number; // saldo acumulado após a linha
 };
 
-export function clientStatement(
+export async function clientStatement(
   clientId: string,
   from?: string,
   to?: string
-): { client: Client; rows: StatementRow[]; balance: number } | null {
-  const db = readDb();
+): Promise<{ client: Client; rows: StatementRow[]; balance: number } | null> {
+  const db = await readDb();
   const client = db.clients.find((c) => c.id === clientId);
   if (!client) return null;
 
@@ -155,11 +156,12 @@ export type SaleRow = Sale & {
   clientName: string;
   payments: SalePayment[];
   canCancel: boolean;
+  photoSignedUrl: string | null;
 };
 
-export function listSalesAdmin(filter: SalesFilter): SaleRow[] {
-  const db = readDb();
-  return db.sales
+export async function listSalesAdmin(filter: SalesFilter): Promise<SaleRow[]> {
+  const db = await readDb();
+  const filtered = db.sales
     .filter((s) => {
       if (filter.pointId && s.point_id !== filter.pointId) return false;
       if (filter.clientId && s.client_id !== filter.clientId) return false;
@@ -174,26 +176,41 @@ export function listSalesAdmin(filter: SalesFilter): SaleRow[] {
       return true;
     })
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .slice(0, 300)
-    .map((s) => ({
-      ...s,
-      pointName: db.points.find((p) => p.id === s.point_id)?.name ?? "—",
-      productName: db.products.find((p) => p.id === s.product_id)?.name ?? "—",
-      clientName: s.client_id
-        ? db.clients.find((c) => c.id === s.client_id)?.name ?? "—"
-        : "Venda avulsa",
-      payments: db.sale_payments.filter((p) => p.sale_id === s.id),
-      canCancel:
-        s.status === "active" && !isCoveredBySettlement(db, s.point_id, s.created_at),
-    }));
+    .slice(0, 300);
+
+  const supabase = await createClient();
+  const rows = await Promise.all(
+    filtered.map(async (s) => {
+      let photoSignedUrl: string | null = null;
+      if (s.photo_url) {
+        const { data } = await supabase.storage
+          .from("photos")
+          .createSignedUrl(s.photo_url, 60 * 60);
+        photoSignedUrl = data?.signedUrl ?? null;
+      }
+      return {
+        ...s,
+        pointName: db.points.find((p) => p.id === s.point_id)?.name ?? "—",
+        productName: db.products.find((p) => p.id === s.product_id)?.name ?? "—",
+        clientName: s.client_id
+          ? db.clients.find((c) => c.id === s.client_id)?.name ?? "—"
+          : "Venda avulsa",
+        payments: db.sale_payments.filter((p) => p.sale_id === s.id),
+        canCancel:
+          s.status === "active" && !isCoveredBySettlement(db, s.point_id, s.created_at),
+        photoSignedUrl,
+      };
+    })
+  );
+  return rows;
 }
 
 // ============================================================
 // Gastos e retiradas (listas)
 // ============================================================
 
-export function listExpensesAdmin(pointId?: string) {
-  const db = readDb();
+export async function listExpensesAdmin(pointId?: string) {
+  const db = await readDb();
   return db.expenses
     .filter((e) => !pointId || e.point_id === pointId)
     .sort((a, b) => b.spent_at.localeCompare(a.spent_at))
@@ -209,8 +226,8 @@ export function listExpensesAdmin(pointId?: string) {
     }));
 }
 
-export function listWithdrawalsAdmin(pointId?: string) {
-  const db = readDb();
+export async function listWithdrawalsAdmin(pointId?: string) {
+  const db = await readDb();
   return db.withdrawals
     .filter((w) => !pointId || w.point_id === pointId)
     .sort((a, b) => b.withdrawn_at.localeCompare(a.withdrawn_at))
@@ -228,8 +245,8 @@ export function listWithdrawalsAdmin(pointId?: string) {
 // Financeiro (período aberto + histórico)
 // ============================================================
 
-export function openPeriodCalc(pointId: string) {
-  const db = readDb();
+export async function openPeriodCalc(pointId: string) {
+  const db = await readDb();
   const start = openPeriodStart(db, pointId);
   return computeSettlement(db, pointId, start, new Date().toISOString());
 }
@@ -239,8 +256,8 @@ export type SettlementWithLines = Settlement & {
   lines: SettlementLine[];
 };
 
-export function listSettlements(pointId?: string): SettlementWithLines[] {
-  const db = readDb();
+export async function listSettlements(pointId?: string): Promise<SettlementWithLines[]> {
+  const db = await readDb();
   return db.settlements
     .filter((s) => !pointId || s.point_id === pointId)
     .sort((a, b) => b.closed_at.localeCompare(a.closed_at))
@@ -251,8 +268,8 @@ export function listSettlements(pointId?: string): SettlementWithLines[] {
     }));
 }
 
-export function getSettlement(id: string): SettlementWithLines | null {
-  const db = readDb();
+export async function getSettlement(id: string): Promise<SettlementWithLines | null> {
+  const db = await readDb();
   const s = db.settlements.find((x) => x.id === id);
   if (!s) return null;
   return {
@@ -287,8 +304,8 @@ export type DashboardData = {
   attention: string[];
 };
 
-export function dashboardData(): DashboardData {
-  const db = readDb();
+export async function dashboardData(): Promise<DashboardData> {
+  const db = await readDb();
   const now = new Date();
   const todayKey = now.toDateString();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();

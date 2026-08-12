@@ -20,15 +20,15 @@ export default async function FinanceiroPage({
   searchParams: Promise<{ point?: string }>;
 }) {
   const { point: pointParam } = await searchParams;
-  const db = readDb();
+  const db = await readDb();
   const points = db.points;
   const activePoint = points.find((p) => p.id === pointParam) ?? points[0];
   if (!activePoint) {
     return <p className="text-ink-soft">Nenhum ponto cadastrado.</p>;
   }
 
-  const calc = openPeriodCalc(activePoint.id);
-  const settlements = listSettlements(activePoint.id);
+  const calc = await openPeriodCalc(activePoint.id);
+  const settlements = await listSettlements(activePoint.id);
 
   return (
     <div className="flex flex-col gap-6">

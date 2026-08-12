@@ -24,8 +24,8 @@ export default async function VendasPage({
   searchParams: Promise<SearchParams>;
 }) {
   const sp = await searchParams;
-  const db = readDb();
-  const sales = listSalesAdmin({
+  const db = await readDb();
+  const sales = await listSalesAdmin({
     pointId: sp.point || undefined,
     clientId: sp.client || undefined,
     method: (sp.method as PaymentMethod) || undefined,

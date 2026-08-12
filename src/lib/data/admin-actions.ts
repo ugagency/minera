@@ -1,15 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { mutateDb, readDb } from "./db";
-import {
-  computeSettlement,
-  isCoveredBySettlement,
-  openPeriodStart,
-  persistSettlement,
-} from "./settlement";
-import { getAdminProfile } from "@/lib/session";
-import type { ReceiptMethod } from "./types";
+import { createClient as createSupabaseClient } from "@/lib/supabase/server";
+import { readDb } from "./db";
+import { computeSettlement, isCoveredBySettlement, openPeriodStart } from "./settlement";
+import { getCurrentProfile } from "@/lib/session";
+import type { ExpenseCategory, PartnerKind, ReceiptMethod } from "./types";
 
 function req(formData: FormData, key: string): string {
   const v = formData.get(key);
@@ -35,7 +31,8 @@ function reqInt(formData: FormData, key: string): number {
 // ============================================================
 
 export async function createReceipt(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const clientId = req(formData, "client_id");
   const pointId = req(formData, "point_id");
   const amount = reqInt(formData, "amount"); // centavos
@@ -46,25 +43,20 @@ export async function createReceipt(formData: FormData): Promise<void> {
     throw new Error("Forma de recebimento inválida.");
   }
 
-  mutateDb((db) => {
-    if (!db.clients.some((c) => c.id === clientId)) throw new Error("Cliente não encontrado.");
-    if (!db.points.some((p) => p.id === pointId)) throw new Error("Ponto não encontrado.");
-    const now = new Date().toISOString();
-    db.receipts.push({
-      id: crypto.randomUUID(),
-      created_at: now,
-      company_id: profile.company_id,
-      point_id: pointId,
-      client_id: clientId,
-      amount,
-      method,
-      received_at: now,
-      note: opt(formData, "note"),
-      created_by: profile.id,
-      status: "active",
-      cancel_reason: null,
-    });
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("receipts").insert({
+    company_id: profile.company_id,
+    point_id: pointId,
+    client_id: clientId,
+    amount,
+    method,
+    received_at: now,
+    note: opt(formData, "note"),
+    created_by: profile.id,
+    status: "active",
+    cancel_reason: null,
   });
+  if (error) throw new Error(`Não foi possível lançar o recebimento: ${error.message}`);
 
   revalidatePath("/app/clientes");
   revalidatePath("/app/financeiro");
@@ -76,43 +68,57 @@ export async function createReceipt(formData: FormData): Promise<void> {
 // ============================================================
 
 export async function toggleClientCredit(clientId: string): Promise<void> {
-  mutateDb((db) => {
-    const client = db.clients.find((c) => c.id === clientId);
-    if (!client) throw new Error("Cliente não encontrado.");
-    client.credit_enabled = !client.credit_enabled;
-  });
+  const supabase = await createSupabaseClient();
+  const { data: client } = await supabase
+    .from("clients")
+    .select("credit_enabled")
+    .eq("id", clientId)
+    .maybeSingle();
+  if (!client) throw new Error("Cliente não encontrado.");
+
+  const { error } = await supabase
+    .from("clients")
+    .update({ credit_enabled: !client.credit_enabled })
+    .eq("id", clientId);
+  if (error) throw new Error(`Não foi possível atualizar o cliente: ${error.message}`);
+
   revalidatePath("/app/clientes");
 }
 
 export async function updateClient(formData: FormData): Promise<void> {
+  const supabase = await createSupabaseClient();
   const id = req(formData, "id");
-  mutateDb((db) => {
-    const client = db.clients.find((c) => c.id === id);
-    if (!client) throw new Error("Cliente não encontrado.");
-    client.name = req(formData, "name");
-    client.phone = opt(formData, "phone");
-    client.doc = opt(formData, "doc");
-    client.credit_enabled = formData.get("credit_enabled") === "on";
-    client.credit_limit = reqInt(formData, "credit_limit");
-  });
-  revalidatePath("/app/clientes");
-  revalidatePath("/app/cadastros");
-}
 
-export async function createClientFull(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
-  mutateDb((db) => {
-    db.clients.push({
-      id: crypto.randomUUID(),
-      created_at: new Date().toISOString(),
-      company_id: profile.company_id,
+  const { error } = await supabase
+    .from("clients")
+    .update({
       name: req(formData, "name"),
       phone: opt(formData, "phone"),
       doc: opt(formData, "doc"),
       credit_enabled: formData.get("credit_enabled") === "on",
       credit_limit: reqInt(formData, "credit_limit"),
-    });
+    })
+    .eq("id", id);
+  if (error) throw new Error(`Não foi possível salvar o cliente: ${error.message}`);
+
+  revalidatePath("/app/clientes");
+  revalidatePath("/app/cadastros");
+}
+
+export async function createClientFull(formData: FormData): Promise<void> {
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
+
+  const { error } = await supabase.from("clients").insert({
+    company_id: profile.company_id,
+    name: req(formData, "name"),
+    phone: opt(formData, "phone"),
+    doc: opt(formData, "doc"),
+    credit_enabled: formData.get("credit_enabled") === "on",
+    credit_limit: reqInt(formData, "credit_limit"),
   });
+  if (error) throw new Error(`Não foi possível criar o cliente: ${error.message}`);
+
   revalidatePath("/app/clientes");
   revalidatePath("/app/cadastros");
 }
@@ -124,48 +130,56 @@ export async function createClientFull(formData: FormData): Promise<void> {
 
 type CancelKind = "sale" | "expense" | "receipt" | "withdrawal";
 
+const CANCEL_TABLE: Record<CancelKind, "sales" | "expenses" | "receipts" | "withdrawals"> = {
+  sale: "sales",
+  expense: "expenses",
+  receipt: "receipts",
+  withdrawal: "withdrawals",
+};
+
+const CANCEL_DATE_FIELD: Record<CancelKind, string> = {
+  sale: "created_at",
+  expense: "spent_at",
+  receipt: "received_at",
+  withdrawal: "withdrawn_at",
+};
+
 export async function cancelEntity(
   kind: CancelKind,
   id: string,
   reason: string
 ): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   if (profile.role === "field") throw new Error("Sem permissão para cancelar.");
   if (!reason.trim()) throw new Error("Motivo do cancelamento é obrigatório.");
 
-  mutateDb((db) => {
-    const entry =
-      kind === "sale"
-        ? db.sales.find((s) => s.id === id)
-        : kind === "expense"
-          ? db.expenses.find((e) => e.id === id)
-          : kind === "receipt"
-            ? db.receipts.find((r) => r.id === id)
-            : db.withdrawals.find((w) => w.id === id);
-    if (!entry) throw new Error("Lançamento não encontrado.");
-    if (entry.status === "canceled") throw new Error("Já está cancelado.");
+  const table = CANCEL_TABLE[kind];
+  const dateField = CANCEL_DATE_FIELD[kind];
 
-    const entryDate =
-      kind === "sale"
-        ? entry.created_at
-        : kind === "expense"
-          ? (entry as { spent_at: string }).spent_at
-          : kind === "receipt"
-            ? (entry as { received_at: string }).received_at
-            : (entry as { withdrawn_at: string }).withdrawn_at;
+  const { data: entry } = await supabase.from(table).select("*").eq("id", id).maybeSingle();
+  if (!entry) throw new Error("Lançamento não encontrado.");
+  if (entry.status === "canceled") throw new Error("Já está cancelado.");
 
-    if (isCoveredBySettlement(db, (entry as { point_id: string }).point_id, entryDate)) {
-      throw new Error("Período já fechado — lance um ajuste no período aberto.");
-    }
+  const db = await readDb();
+  const entryRecord = entry as unknown as Record<string, string>;
+  const entryDate = entryRecord[dateField]!;
+  const entryPointId = entryRecord.point_id!;
+  if (isCoveredBySettlement(db, entryPointId, entryDate)) {
+    throw new Error("Período já fechado — lance um ajuste no período aberto.");
+  }
 
-    entry.status = "canceled";
-    entry.cancel_reason = reason.trim();
-    if (kind === "sale") {
-      const sale = entry as (typeof db.sales)[number];
-      sale.canceled_at = new Date().toISOString();
-      sale.canceled_by = profile.id;
-    }
-  });
+  const updates: Record<string, unknown> = {
+    status: "canceled",
+    cancel_reason: reason.trim(),
+  };
+  if (kind === "sale") {
+    updates.canceled_at = new Date().toISOString();
+    updates.canceled_by = profile.id;
+  }
+
+  const { error } = await supabase.from(table).update(updates as never).eq("id", id);
+  if (error) throw new Error(`Não foi possível cancelar: ${error.message}`);
 
   revalidatePath("/app/vendas");
   revalidatePath("/app/gastos");
@@ -180,30 +194,33 @@ export async function cancelEntity(
 // ============================================================
 
 export async function createWithdrawal(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const partnerId = req(formData, "partner_id");
   const amount = reqInt(formData, "amount");
   if (amount <= 0) throw new Error("Informe um valor maior que zero.");
 
-  mutateDb((db) => {
-    const partner = db.partners.find((p) => p.id === partnerId);
-    if (!partner) throw new Error("Sócio não encontrado.");
-    if (partner.kind !== "partner") throw new Error("Retirada é só para sócios.");
-    const now = new Date().toISOString();
-    db.withdrawals.push({
-      id: crypto.randomUUID(),
-      created_at: now,
-      company_id: profile.company_id,
-      point_id: partner.point_id,
-      partner_id: partner.id,
-      amount,
-      note: opt(formData, "note"),
-      withdrawn_at: now,
-      created_by: profile.id,
-      status: "active",
-      cancel_reason: null,
-    });
+  const { data: partner } = await supabase
+    .from("partners")
+    .select("id, point_id, kind")
+    .eq("id", partnerId)
+    .maybeSingle();
+  if (!partner) throw new Error("Sócio não encontrado.");
+  if (partner.kind !== "partner") throw new Error("Retirada é só para sócios.");
+
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("withdrawals").insert({
+    company_id: profile.company_id,
+    point_id: partner.point_id,
+    partner_id: partner.id,
+    amount,
+    note: opt(formData, "note"),
+    withdrawn_at: now,
+    created_by: profile.id,
+    status: "active",
+    cancel_reason: null,
   });
+  if (error) throw new Error(`Não foi possível lançar a retirada: ${error.message}`);
 
   revalidatePath("/app/retiradas");
   revalidatePath("/app/financeiro");
@@ -215,7 +232,8 @@ export async function createWithdrawal(formData: FormData): Promise<void> {
 // ============================================================
 
 export async function createExpenseAdmin(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const pointId = req(formData, "point_id");
   const category = req(formData, "category");
   const amount = reqInt(formData, "amount");
@@ -224,26 +242,22 @@ export async function createExpenseAdmin(formData: FormData): Promise<void> {
     throw new Error("Categoria inválida.");
   }
 
-  mutateDb((db) => {
-    if (!db.points.some((p) => p.id === pointId)) throw new Error("Ponto não encontrado.");
-    const now = new Date().toISOString();
-    db.expenses.push({
-      id: crypto.randomUUID(),
-      created_at: now,
-      company_id: profile.company_id,
-      point_id: pointId,
-      machine_id: opt(formData, "machine_id"),
-      category: category as "diesel" | "part_service" | "labor" | "freight" | "other",
-      amount,
-      liters: opt(formData, "liters") ? Number(opt(formData, "liters")) : null,
-      note: opt(formData, "note"),
-      photo_url: null,
-      spent_at: now,
-      created_by: profile.id,
-      status: "active",
-      cancel_reason: null,
-    });
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("expenses").insert({
+    company_id: profile.company_id,
+    point_id: pointId,
+    machine_id: opt(formData, "machine_id"),
+    category: category as ExpenseCategory,
+    amount,
+    liters: opt(formData, "liters") ? Number(opt(formData, "liters")) : null,
+    note: opt(formData, "note"),
+    photo_url: null,
+    spent_at: now,
+    created_by: profile.id,
+    status: "active",
+    cancel_reason: null,
   });
+  if (error) throw new Error(`Não foi possível salvar o gasto: ${error.message}`);
 
   revalidatePath("/app/gastos");
   revalidatePath("/app/financeiro");
@@ -251,24 +265,48 @@ export async function createExpenseAdmin(formData: FormData): Promise<void> {
 }
 
 // ============================================================
-// Fechar acerto (§7.2) — recalcula no confirmar com period_end = agora
+// Fechar acerto (§7.2) — o cálculo é feito em TS (settlement.ts, puro);
+// a persistência (settlement + lines) é atômica via RPC close_settlement.
 // ============================================================
 
 export async function closeSettlement(pointId: string): Promise<string> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   if (profile.role === "field") throw new Error("Sem permissão.");
 
-  const settlementId = mutateDb((db) => {
-    if (!db.points.some((p) => p.id === pointId)) throw new Error("Ponto não encontrado.");
-    const start = openPeriodStart(db, pointId);
-    const end = new Date().toISOString();
-    const calc = computeSettlement(db, pointId, start, end);
-    return persistSettlement(db, calc, profile.id);
+  const db = await readDb();
+  if (!db.points.some((p) => p.id === pointId)) throw new Error("Ponto não encontrado.");
+
+  const start = openPeriodStart(db, pointId);
+  const end = new Date().toISOString();
+  const calc = computeSettlement(db, pointId, start, end);
+
+  const { data, error } = await supabase.rpc("close_settlement", {
+    p_point_id: pointId,
+    p_period_start: start,
+    p_period_end: end,
+    p_cash_in: calc.cash_in,
+    p_gross_sales: calc.gross_sales,
+    p_expenses_total: calc.expenses_total,
+    p_landowner_payout: calc.landowner_payout,
+    p_profit_pool: calc.profit_pool,
+    p_snapshot: calc,
+    p_lines: calc.lines.map((l) => ({
+      partner_id: l.partner_id,
+      partner_name: l.partner_name,
+      kind: l.kind,
+      base_amount: l.base_amount,
+      withdrawals_total: l.withdrawals_total,
+      final_amount: l.final_amount,
+    })),
   });
+  if (error || !data?.[0]) {
+    throw new Error(`Não foi possível fechar o acerto: ${error?.message ?? "erro desconhecido"}`);
+  }
 
   revalidatePath("/app/financeiro");
   revalidatePath("/app");
-  return settlementId;
+  return data[0].id;
 }
 
 // ============================================================
@@ -276,139 +314,155 @@ export async function closeSettlement(pointId: string): Promise<string> {
 // ============================================================
 
 export async function savePoint(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const id = opt(formData, "id");
-  mutateDb((db) => {
-    if (id) {
-      const point = db.points.find((p) => p.id === id);
-      if (!point) throw new Error("Ponto não encontrado.");
-      point.name = req(formData, "name");
-      point.city = opt(formData, "city");
-      const counter = db.point_counters.find((c) => c.point_id === id);
-      if (counter) counter.prefix = req(formData, "prefix").toUpperCase();
-    } else {
-      const pointId = crypto.randomUUID();
-      db.points.push({
-        id: pointId,
-        created_at: new Date().toISOString(),
+  const prefix = req(formData, "prefix").toUpperCase();
+
+  if (id) {
+    const { error } = await supabase
+      .from("points")
+      .update({ name: req(formData, "name"), city: opt(formData, "city") })
+      .eq("id", id);
+    if (error) throw new Error(`Não foi possível salvar o ponto: ${error.message}`);
+
+    const { error: counterError } = await supabase
+      .from("point_counters")
+      .update({ prefix })
+      .eq("point_id", id);
+    if (counterError) throw new Error(`Não foi possível salvar o prefixo: ${counterError.message}`);
+  } else {
+    const { data: point, error } = await supabase
+      .from("points")
+      .insert({
         company_id: profile.company_id,
         name: req(formData, "name"),
         city: opt(formData, "city"),
-      });
-      db.point_counters.push({
-        point_id: pointId,
-        prefix: req(formData, "prefix").toUpperCase(),
-        next_no: 1,
-      });
-    }
-  });
+      })
+      .select("id")
+      .single();
+    if (error || !point) throw new Error(`Não foi possível criar o ponto: ${error?.message}`);
+
+    const { error: counterError } = await supabase
+      .from("point_counters")
+      .insert({ point_id: point.id, prefix, next_no: 1 });
+    if (counterError) throw new Error(`Não foi possível criar o contador: ${counterError.message}`);
+  }
+
   revalidatePath("/app/cadastros");
 }
 
 export async function savePartner(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const id = opt(formData, "id");
-  const kind = req(formData, "kind") as "partner" | "landowner";
+  const kind = req(formData, "kind") as PartnerKind;
   const percent = kind === "partner" ? Number(req(formData, "percent")) : null;
   const landownerModel =
-    kind === "landowner"
-      ? (req(formData, "landowner_model") as "revenue_pct" | "fixed")
-      : null;
-  const landownerValue =
-    kind === "landowner" ? reqInt(formData, "landowner_value") : null;
+    kind === "landowner" ? (req(formData, "landowner_model") as "revenue_pct" | "fixed") : null;
+  const landownerValue = kind === "landowner" ? reqInt(formData, "landowner_value") : null;
 
-  mutateDb((db) => {
-    if (id) {
-      const partner = db.partners.find((p) => p.id === id);
-      if (!partner) throw new Error("Sócio não encontrado.");
-      partner.name = req(formData, "name");
-      partner.kind = kind;
-      partner.percent = percent;
-      partner.landowner_model = landownerModel;
-      partner.landowner_value = landownerValue;
-    } else {
-      db.partners.push({
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        company_id: profile.company_id,
-        point_id: req(formData, "point_id"),
+  if (id) {
+    const { error } = await supabase
+      .from("partners")
+      .update({
         name: req(formData, "name"),
         kind,
         percent,
         landowner_model: landownerModel,
         landowner_value: landownerValue,
-      });
-    }
-  });
+      })
+      .eq("id", id);
+    if (error) throw new Error(`Não foi possível salvar o sócio: ${error.message}`);
+  } else {
+    const { error } = await supabase.from("partners").insert({
+      company_id: profile.company_id,
+      point_id: req(formData, "point_id"),
+      name: req(formData, "name"),
+      kind,
+      percent,
+      landowner_model: landownerModel,
+      landowner_value: landownerValue,
+    });
+    if (error) throw new Error(`Não foi possível criar o sócio: ${error.message}`);
+  }
+
   revalidatePath("/app/cadastros");
   revalidatePath("/app/financeiro");
 }
 
 export async function saveProduct(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const id = opt(formData, "id");
-  mutateDb((db) => {
-    if (id) {
-      const product = db.products.find((p) => p.id === id);
-      if (!product) throw new Error("Produto não encontrado.");
-      product.name = req(formData, "name");
-      product.price_per_m3 = reqInt(formData, "price_per_m3");
-    } else {
-      db.products.push({
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        company_id: profile.company_id,
-        point_id: req(formData, "point_id"),
-        name: req(formData, "name"),
-        price_per_m3: reqInt(formData, "price_per_m3"),
-      });
-    }
-  });
+
+  if (id) {
+    const { error } = await supabase
+      .from("products")
+      .update({ name: req(formData, "name"), price_per_m3: reqInt(formData, "price_per_m3") })
+      .eq("id", id);
+    if (error) throw new Error(`Não foi possível salvar o produto: ${error.message}`);
+  } else {
+    const { error } = await supabase.from("products").insert({
+      company_id: profile.company_id,
+      point_id: req(formData, "point_id"),
+      name: req(formData, "name"),
+      price_per_m3: reqInt(formData, "price_per_m3"),
+    });
+    if (error) throw new Error(`Não foi possível criar o produto: ${error.message}`);
+  }
+
   revalidatePath("/app/cadastros");
 }
 
 export async function saveVehicle(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const id = opt(formData, "id");
-  mutateDb((db) => {
-    if (id) {
-      const vehicle = db.vehicles.find((v) => v.id === id);
-      if (!vehicle) throw new Error("Veículo não encontrado.");
-      vehicle.label = req(formData, "label");
-      vehicle.plate = opt(formData, "plate");
-      vehicle.capacity_m3 = Number(req(formData, "capacity_m3"));
-    } else {
-      db.vehicles.push({
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        company_id: profile.company_id,
-        client_id: null,
-        plate: opt(formData, "plate"),
+
+  if (id) {
+    const { error } = await supabase
+      .from("vehicles")
+      .update({
         label: req(formData, "label"),
+        plate: opt(formData, "plate"),
         capacity_m3: Number(req(formData, "capacity_m3")),
-      });
-    }
-  });
+      })
+      .eq("id", id);
+    if (error) throw new Error(`Não foi possível salvar o veículo: ${error.message}`);
+  } else {
+    const { error } = await supabase.from("vehicles").insert({
+      company_id: profile.company_id,
+      client_id: null,
+      plate: opt(formData, "plate"),
+      label: req(formData, "label"),
+      capacity_m3: Number(req(formData, "capacity_m3")),
+    });
+    if (error) throw new Error(`Não foi possível criar o veículo: ${error.message}`);
+  }
+
   revalidatePath("/app/cadastros");
 }
 
 export async function saveMachine(formData: FormData): Promise<void> {
-  const profile = await getAdminProfile();
+  const supabase = await createSupabaseClient();
+  const profile = await getCurrentProfile();
   const id = opt(formData, "id");
-  mutateDb((db) => {
-    if (id) {
-      const machine = db.machines.find((m) => m.id === id);
-      if (!machine) throw new Error("Máquina não encontrada.");
-      machine.name = req(formData, "name");
-    } else {
-      db.machines.push({
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        company_id: profile.company_id,
-        point_id: req(formData, "point_id"),
-        name: req(formData, "name"),
-      });
-    }
-  });
+
+  if (id) {
+    const { error } = await supabase
+      .from("machines")
+      .update({ name: req(formData, "name") })
+      .eq("id", id);
+    if (error) throw new Error(`Não foi possível salvar a máquina: ${error.message}`);
+  } else {
+    const { error } = await supabase.from("machines").insert({
+      company_id: profile.company_id,
+      point_id: req(formData, "point_id"),
+      name: req(formData, "name"),
+    });
+    if (error) throw new Error(`Não foi possível criar a máquina: ${error.message}`);
+  }
+
   revalidatePath("/app/cadastros");
 }

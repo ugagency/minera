@@ -15,7 +15,7 @@ export default async function ExtratoPrintPage({
 }) {
   const { clientId } = await params;
   const { from, to } = await searchParams;
-  const statement = clientStatement(clientId, from, to);
+  const statement = await clientStatement(clientId, from, to);
   if (!statement) notFound();
   const { client, rows, balance } = statement;
 

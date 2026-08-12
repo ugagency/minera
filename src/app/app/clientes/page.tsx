@@ -8,7 +8,7 @@ import { formatBRL } from "@/lib/format";
 export const dynamic = "force-dynamic";
 
 export default async function ClientesPage() {
-  const clients = listClientsAdmin();
+  const clients = await listClientsAdmin();
 
   return (
     <div className="flex flex-col gap-6">

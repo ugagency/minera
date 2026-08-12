@@ -1,23 +1,24 @@
-import fs from "node:fs";
-import path from "node:path";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-// Storage mock (F2, sem Supabase Storage ainda): grava o arquivo em
-// public/uploads/{companyId}/ e devolve a URL pública relativa. Quando o
-// Supabase Storage entrar, isto vira upload pro bucket `photos` + URL assinada.
-
+// Storage real (bucket `photos`, privado — SPEC §6). Grava com o client
+// autenticado da requisição, então a RLS do Storage já garante que o objeto
+// cai dentro da pasta {company_id}/ do usuário. Retorna o PATH do objeto
+// (não a URL) — a exibição sempre passa por URL assinada (ver queries.ts).
 export async function savePhoto(
   file: File,
-  companyId: string
+  companyId: string,
+  supabase: SupabaseClient
 ): Promise<string> {
   const ext = extensionFromType(file.type) ?? "jpg";
-  const filename = `${crypto.randomUUID()}.${ext}`;
-  const dir = path.join(process.cwd(), "public", "uploads", companyId);
-  fs.mkdirSync(dir, { recursive: true });
+  const path = `${companyId}/${crypto.randomUUID()}.${ext}`;
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  fs.writeFileSync(path.join(dir, filename), buffer);
+  const { error } = await supabase.storage.from("photos").upload(path, file, {
+    contentType: file.type || "image/jpeg",
+    upsert: false,
+  });
+  if (error) throw new Error(`Falha ao enviar foto: ${error.message}`);
 
-  return `/uploads/${companyId}/${filename}`;
+  return path;
 }
 
 function extensionFromType(mime: string): string | null {

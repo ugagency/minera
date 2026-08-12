@@ -11,8 +11,8 @@ import { EXPENSE_CATEGORY_LABELS } from "@/lib/labels";
 export const dynamic = "force-dynamic";
 
 export default async function GastosPage() {
-  const db = readDb();
-  const expenses = listExpensesAdmin();
+  const db = await readDb();
+  const expenses = await listExpensesAdmin();
 
   return (
     <div className="flex flex-col gap-6">
